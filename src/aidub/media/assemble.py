@@ -1,0 +1,182 @@
+"""Audio Timeline Assembly & EBU R128 Loudness Normalization (from dub-studio)."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import numpy as np
+
+from aidub.media.ffmpeg_ops import duration, time_stretch
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_voice(
+    samples: np.ndarray,
+    sr: int,
+    target_lufs: float = -16.0,
+    target_rms_db: float = -18.0,
+    max_gain_db: float = 12.0,
+    peak_limit: float = 0.985,
+) -> np.ndarray:
+    """
+    EBU R128 (or RMS fallback) integrated loudness normalization per phrase.
+
+    Applies pure linear gain capped at +12dB to avoid amplifying background noise,
+    followed by peak limiting to 0.985 to prevent clipping distortion.
+
+    Args:
+        samples: Mono audio signal float32/float64 (-1.0 to +1.0).
+        sr: Sample rate in Hz.
+        target_lufs: Target loudness in LUFS (-16.0 default).
+        target_rms_db: RMS fallback target when clip is too short for pyloudnorm.
+        max_gain_db: Maximum allowed gain boost in dB (12.0dB max).
+        peak_limit: Peak ceiling limit (0.985 max).
+
+    Returns:
+        Loudness-normalized float32 audio sample array.
+    """
+    if len(samples) == 0:
+        return samples
+
+    signal = samples.astype(np.float32)
+    max_peak = np.abs(signal).max()
+    if max_peak == 0:
+        return signal
+
+    clip_dur = len(signal) / sr
+    gain_db = 0.0
+
+    if clip_dur >= 0.400:
+        try:
+            import pyloudnorm as pyln  # type: ignore[import-not-found]
+
+            meter = pyln.Meter(sr)
+            loudness = meter.integrated_loudness(signal)
+            if not np.isinf(loudness) and not np.isnan(loudness):
+                gain_db = target_lufs - loudness
+        except Exception:
+            # Fallback to RMS
+            rms = np.sqrt(np.mean(signal**2))
+            if rms > 1e-7:
+                rms_db = 20 * np.log10(rms)
+                gain_db = target_rms_db - rms_db
+    else:
+        # Short clip RMS fallback
+        rms = np.sqrt(np.mean(signal**2))
+        if rms > 1e-7:
+            rms_db = 20 * np.log10(rms)
+            gain_db = target_rms_db - rms_db
+
+    # Cap maximum gain boost
+    gain_db = min(gain_db, max_gain_db)
+    gain_linear = 10 ** (gain_db / 20.0)
+    scaled = signal * gain_linear
+
+    # Peak limiting
+    peak = np.abs(scaled).max()
+    if peak > peak_limit:
+        scaled = scaled * (peak_limit / peak)
+
+    return scaled.astype(np.float32)
+
+
+def fit_to_slot(
+    seg_wav: Path | str,
+    target_dur: float,
+    out_wav: Path | str,
+    max_stretch: float = 2.0,
+) -> Path:
+    """
+    Fit synthesized audio segment into available slot time.
+
+    Rule: ONLY speeds up audio (never slows down, as slowing is unnatural).
+    Applies atempo if current duration > target_dur * 1.02, capped at max_stretch.
+
+    Args:
+        seg_wav: Input raw synthesized WAV file.
+        target_dur: Available slot room in seconds.
+        out_wav: Output fitted WAV path.
+        max_stretch: Maximum allowed speed-up factor (2.0 default).
+
+    Returns:
+        Path to fitted output WAV.
+    """
+    cur_dur = duration(seg_wav)
+    out_p = Path(out_wav)
+
+    if cur_dur <= target_dur * 1.02:
+        # Fits comfortably within slot, no stretching needed
+        import shutil
+
+        shutil.copyfile(str(seg_wav), str(out_p))
+        return out_p
+
+    # Requires speed-up
+    ratio = cur_dur / max(target_dur, 0.1)
+    ratio_clamped = min(ratio, max_stretch)
+
+    logger.debug("fit_to_slot: speed up %s from %.2fs to %.2fs (ratio %.2fx)", Path(seg_wav).name, cur_dur, target_dur, ratio_clamped)
+    return time_stretch(seg_wav, out_p, ratio_clamped)
+
+
+def assemble_timeline(
+    placed_segments: list[tuple[float, Path | str]],
+    total_duration_s: float,
+    output_wav: Path | str,
+    sample_rate: int = 44100,
+) -> Path:
+    """
+    Assemble placed dubbed segments into a single cohesive audio track.
+
+    Uses cursor-aware positioning: segments are placed at their target timestamps,
+    with overlap prevention so dialogue turns never collide. Final audio is padded
+    to match video duration.
+
+    Args:
+        placed_segments: List of tuples (start_timestamp_s, segment_wav_path).
+        total_duration_s: Target total video duration in seconds.
+        output_wav: Output WAV file path.
+        sample_rate: Target output sample rate (44100Hz default).
+
+    Returns:
+        Path to completed audio track.
+    """
+    import soundfile as sf  # type: ignore[import-not-found]
+
+    total_samples = int(total_duration_s * sample_rate) + sample_rate
+    timeline_buf = np.zeros(total_samples, dtype=np.float32)
+
+    cursor_sample = 0
+
+    for start_s, seg_path in sorted(placed_segments, key=lambda x: x[0]):
+        start_sample = max(int(start_s * sample_rate), cursor_sample)
+        data, sr = sf.read(str(seg_path), dtype="float32")
+
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+
+        if sr != sample_rate:
+            import librosa  # type: ignore[import-not-found]
+
+            data = librosa.resample(data, orig_sr=sr, target_sr=sample_rate)
+
+        # Normalize phrase loudness
+        norm_data = normalize_voice(data, sample_rate)
+        seg_samples = len(norm_data)
+
+        end_sample = start_sample + seg_samples
+        if end_sample > len(timeline_buf):
+            # Extend buffer if needed
+            timeline_buf = np.pad(timeline_buf, (0, end_sample - len(timeline_buf)))
+
+        timeline_buf[start_sample:end_sample] += norm_data
+        cursor_sample = end_sample
+
+    out_p = Path(output_wav)
+    sf.write(str(out_p), timeline_buf[: int(total_duration_s * sample_rate)], sample_rate)
+    return out_p
+
+
+__all__ = ["assemble_timeline", "fit_to_slot", "normalize_voice"]

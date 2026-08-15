@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+import hashlib
+
+from aidub.contracts.jobs import JobDescriptor
+from aidub.domain.identifiers import MediaAssetId, ProjectId
+from aidub.domain.time import AudioSamplePosition, AudioSampleRange
+from aidub.domain.types import LanguageTag, Sha256
+from aidub.speech.contracts import RecognitionChunkResult, SpeechRecognitionRequest
+from aidub.workers.supervisor import LocalWorkerSupervisor
+
+
+def make_asr_job(job_id: str) -> JobDescriptor:
+    audio_range = AudioSampleRange(
+        start=AudioSamplePosition(sample_index=0, sample_rate=48_000),
+        sample_count=96_000,
+    )
+    request = SpeechRecognitionRequest(
+        request_id=f"req_{job_id}",
+        project_id=ProjectId("prj_asr_worker"),
+        media_asset_id=MediaAssetId("med_audio_worker"),
+        source_audio_sha256=Sha256("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+        language=LanguageTag("en-US"),
+        full_audio_range=audio_range,
+        audio_range=audio_range,
+    )
+    return JobDescriptor(
+        job_id=job_id,
+        idempotency_key=hashlib.sha256(job_id.encode()).hexdigest(),
+        project_id="prj_asr_worker",
+        job_type="speech.asr",
+        parameters={
+            "request": request.model_dump(mode="json"),
+            "options": {"device": "cpu", "compute_type": "float32"},
+        },
+    )
+
+
+def test_asr_worker_executes_speech_asr_job() -> None:
+    with LocalWorkerSupervisor() as supervisor:
+        job = make_asr_job("job_asr_001")
+        supervisor.submit(job)
+        result = supervisor.wait(timeout_seconds=10.0)
+
+        assert result.succeeded
+        assert "result_json" in result.metrics
+        chunk_result = RecognitionChunkResult.model_validate_json(str(result.metrics["result_json"]))
+        assert chunk_result.provenance.engine.engine_id == "faster-whisper"
+        assert len(chunk_result.segments) > 0
