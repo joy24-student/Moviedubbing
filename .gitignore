@@ -27,6 +27,7 @@ cache/
 renders/
 exports/
 test movies/
+test_movies/
 opensourcemoviedubbing/
 *.aidub/recovery/
 *.aidub/logs/
@@ -35,3 +36,8 @@ opensourcemoviedubbing/
 *.wmv
 *.mkv
 *.mov
+*.wav
+*.mp3
+*.flac
+*.aac
+*.db
