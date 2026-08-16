@@ -180,7 +180,13 @@ def test_nle_profile_shortcuts() -> None:
 
 
 def test_screen_widget_factory_all_26_screens() -> None:
+    try:
+        from PySide6.QtWidgets import QApplication
+        _app = QApplication.instance() or QApplication([])
+    except ImportError:
+        pass
     factory = ScreenWidgetFactory()
     for screen_enum in ScreenId:
         w = factory.get_or_create(screen_enum)
         assert w is not None
+

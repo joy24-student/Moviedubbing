@@ -62,7 +62,7 @@ def create_web_app():
         except Exception as exc:
             return None, None, f"Error running dubbing pipeline: {exc}"
 
-    with gr.Blocks(title="AI Movie Dubbing Studio", theme=gr.themes.Soft()) as app:
+    with gr.Blocks(title="AI Movie Dubbing Studio") as app:
         gr.Markdown("# AI Movie Dubbing Studio - Web UI")
         gr.Markdown("Upload movie clips, choose target language (Bengali `bn`), set AI API keys, and run the pipeline interactively.")
 
@@ -103,7 +103,14 @@ def launch_web_ui(port: int = 7860, share: bool = False) -> None:
         from aidub.ui.html_server import run_html_studio_server
         run_html_studio_server(port=port)
     else:
-        app.launch(server_name="0.0.0.0", server_port=port, share=share)
+        for p in range(port, port + 10):
+            try:
+                app.launch(server_name="0.0.0.0", server_port=p, share=share)
+                break
+            except OSError as err:
+                if p == port + 9:
+                    raise err
+                logger.info("Port %d in use, trying %d...", p, p + 1)
 
 
 __all__ = ["create_web_app", "launch_web_ui"]

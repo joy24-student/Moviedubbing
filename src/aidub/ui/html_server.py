@@ -137,7 +137,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <form id="dubForm">
                 <div class="form-group">
                     <label for="inputPath">Input Movie File Path (.mp4, .mkv, .mov)</label>
-                    <input type="text" id="inputPath" placeholder="D:\movies\sample.mp4" required>
+                    <input type="text" id="inputPath" placeholder="D:/movies/sample.mp4" required>
                 </div>
                 <div class="form-group">
                     <label for="targetLang">Target Language Code</label>
@@ -257,8 +257,8 @@ class StudioWebHandler(BaseHTTPRequestHandler):
                 outputs = engine.run()
                 response = {
                     "status": "ok",
-                    "dubbed_video": str(outputs.dubbed_video),
-                    "bilingual_srt": str(outputs.bilingual_srt),
+                    "dubbed_video": outputs.dubbed_video,
+                    "bilingual_srt": outputs.bilingual_srt,
                 }
             except Exception as exc:
                 response = {"status": "error", "error": str(exc)}

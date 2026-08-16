@@ -65,3 +65,8 @@ def run_desktop(argv: Sequence[str] | None = None, *, locale: str | None = None)
         sys.stderr.write(f"{exc}\n")
         return 2
     return desktop.run()
+
+
+if __name__ == "__main__":
+    sys.exit(run_desktop())
+
